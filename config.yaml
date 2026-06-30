@@ -1,0 +1,22 @@
+app:
+  name: docx-template-agent
+  mode: cli
+
+paths:
+  default_template: templates/report.yaml
+  output_dir: samples/output
+  log_dir: logs
+
+safety:
+  allow_wps_com: false
+  allow_pywin32: false
+  allow_text_mutation: false
+  allow_delete_paragraph: false
+  allow_modify_table_cell_text: false
+
+llm:
+  enabled: false
+  endpoint: ""
+  model: ""
+  api_key_env: PRIVATE_LLM_API_KEY
+  timeout: 8

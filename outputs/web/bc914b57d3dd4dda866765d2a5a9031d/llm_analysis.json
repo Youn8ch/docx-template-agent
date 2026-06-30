@@ -1,0 +1,28 @@
+{
+  "available": true,
+  "mode": "private_llm",
+  "status": "ok",
+  "template_recommendation": {
+    "result": {
+      "recommended_template": "not-the-user-template",
+      "operations": [
+        {
+          "type": "FormatOperation",
+          "action": "apply_paragraph_style",
+          "target_index": 999,
+          "llm_marker": "llm-only-operation"
+        }
+      ]
+    }
+  },
+  "operations": [
+    {
+      "type": "FormatOperation",
+      "action": "delete_paragraph",
+      "target_index": 999,
+      "llm_marker": "llm-only-operation"
+    }
+  ],
+  "operations_source": "rule_engine_only",
+  "operations_generated": false
+}
