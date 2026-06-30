@@ -20,6 +20,7 @@ import yaml
 
 from src.engine.model.document_model import DocumentModel, ParagraphInfo
 from src.engine.model.operation_model import StyleCheckReport
+from src.llm.client import LLMCallError, build_openai_compatible_client, call_chat_completion
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +29,8 @@ DEFAULT_TIMEOUT_SECONDS = 8.0
 DEFAULT_MAX_RETRIES = 0
 DEFAULT_PREVIEW_CHARS = 80
 DEFAULT_MAX_PARAGRAPHS = 80
+DEFAULT_ERROR_BODY_CHARS = 1000
+DEFAULT_USER_AGENT = "docx-template-agent/0.1 OpenAI-compatible-client"
 DEFAULT_AVAILABLE_TEMPLATES = ("report",)
 ADVISORY_ONLY_INSTRUCTION = (
     "Only output advisory JSON for human review. Do not generate FormatOperation. "
@@ -130,7 +133,7 @@ def _chat_completions_url(endpoint: str) -> str:
     return f"{clean}/v1/chat/completions"
 
 
-def _default_transport(
+def _urllib_transport(
     endpoint: str,
     headers: dict[str, str],
     payload: dict[str, Any],
@@ -145,6 +148,42 @@ def _default_transport(
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def _default_transport(
+    endpoint: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    timeout: float,
+) -> dict[str, Any]:
+    api_key = ""
+    authorization = headers.get("Authorization") or headers.get("authorization")
+    if authorization and authorization.lower().startswith("bearer "):
+        api_key = authorization[7:].strip()
+
+    client = build_openai_compatible_client(
+        base_url=endpoint.rstrip("/"),
+        api_key=api_key or "not-used",
+        timeout=timeout,
+    )
+    content = call_chat_completion(
+        client,
+        model=str(payload.get("model") or ""),
+        messages=payload.get("messages") or [],
+        temperature=float(payload.get("temperature", 0)),
+        response_format=payload.get("response_format"),
+    )
+    return {"choices": [{"message": {"content": content}}]}
+
+
+def _http_error_message(exc: urllib.error.HTTPError) -> str:
+    body = exc.read().decode("utf-8", errors="replace").strip()
+    body_snippet = _truncate(body, DEFAULT_ERROR_BODY_CHARS) if body else "(empty)"
+    return (
+        f"HTTPError {exc.code} {exc.reason}; "
+        f"url={exc.url}; "
+        f"body={body_snippet}"
+    )
 
 
 def _truncate(text: str, limit: int = DEFAULT_PREVIEW_CHARS) -> str:
@@ -237,38 +276,26 @@ class PrivateLLMClient:
             "messages": [
                 {
                     "role": "system",
-                    "content": (
-                        "You are a private LLM health check endpoint. Return concise JSON. "
-                        f"{ADVISORY_ONLY_INSTRUCTION}"
-                    ),
+                    "content": "You are a private LLM health check endpoint. Reply with only: ok",
                 },
                 {
                     "role": "user",
-                    "content": json.dumps(
-                        {
-                            "task": "health_check",
-                            "instruction": "Reply with JSON confirming the model is reachable.",
-                            "input_limits": {
-                                "docx_loaded": False,
-                                "full_text_sent": False,
-                                "operations_allowed": False,
-                            },
-                        },
-                        ensure_ascii=False,
-                    ),
+                    "content": "health_check: reply with only ok",
                 },
             ],
             "temperature": 0,
-            "response_format": {"type": "json_object"},
         }
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": DEFAULT_USER_AGENT,
+        }
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
 
         try:
             response = self._request_with_retries(headers, request_payload)
             content = self._extract_content(response)
-            parsed = self._parse_json_content(content)
+            parsed = self._parse_health_check_content(content)
             return {
                 "available": True,
                 "mode": "private_llm",
@@ -277,7 +304,7 @@ class PrivateLLMClient:
                 "operations_generated": False,
                 "operations_source": "rule_engine_only",
             }
-        except (OSError, TimeoutError, urllib.error.URLError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        except (OSError, TimeoutError, urllib.error.URLError, LLMCallError, ValueError, KeyError, json.JSONDecodeError) as exc:
             return self._fallback(f"{exc.__class__.__name__}: {exc}", task="health_check")
 
     def assist_document_type(self, document: DocumentModel) -> dict[str, Any]:
@@ -436,7 +463,10 @@ class PrivateLLMClient:
             "temperature": 0,
             "response_format": {"type": "json_object"},
         }
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": DEFAULT_USER_AGENT,
+        }
         if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
 
@@ -450,7 +480,7 @@ class PrivateLLMClient:
                 "result": parsed,
                 "operations_generated": False,
             }
-        except (OSError, TimeoutError, urllib.error.URLError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        except (OSError, TimeoutError, urllib.error.URLError, LLMCallError, ValueError, KeyError, json.JSONDecodeError) as exc:
             return self._fallback(f"{exc.__class__.__name__}: {exc}", task=task)
 
     def _request_with_retries(
@@ -467,6 +497,10 @@ class PrivateLLMClient:
                     request_payload,
                     self.config.timeout,
                 )
+            except urllib.error.HTTPError as exc:
+                last_exc = OSError(_http_error_message(exc))
+            except LLMCallError as exc:
+                last_exc = exc
             except (OSError, TimeoutError, urllib.error.URLError) as exc:
                 last_exc = exc
         if last_exc is not None:
@@ -487,6 +521,17 @@ class PrivateLLMClient:
     @staticmethod
     def _parse_json_content(content: str) -> Any:
         return json.loads(content)
+
+    @staticmethod
+    def _parse_health_check_content(content: str) -> dict[str, Any]:
+        text = content.strip()
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {"status": text}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"status": parsed}
 
     @staticmethod
     def _fallback(reason: str, *, task: str | None = None) -> dict[str, Any]:

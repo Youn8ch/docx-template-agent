@@ -1,8 +1,12 @@
 import json
+import urllib.error
+import urllib.request
 from pathlib import Path
 
+import src.llm.private_llm_client as private_llm_client
 from src.engine.model.document_model import DocumentModel, ParagraphInfo, TableCellInfo, TableInfo
 from src.engine.model.operation_model import StyleCheckReport, StyleIssue
+from src.llm.client import LLMCallError
 from src.llm.private_llm_client import (
     PrivateLLMClient,
     PrivateLLMConfig,
@@ -432,15 +436,147 @@ def test_health_check_uses_minimal_payload_without_docx_data():
     )
 
     result = client.health_check()
-    sent = json.loads(captured["payload"]["messages"][1]["content"])
 
     assert result["available"] is True
     assert result["mode"] == "private_llm"
     assert result["operations_generated"] is False
     assert result["operations_source"] == "rule_engine_only"
-    assert sent["task"] == "health_check"
-    assert sent["input_limits"]["docx_loaded"] is False
-    assert "document_snapshot" not in sent
+    assert result["result"]["status"] == "ok"
+    assert set(captured["payload"]) == {"model", "messages", "temperature"}
+    assert "response_format" not in captured["payload"]
+    assert "tools" not in captured["payload"]
+    assert "stream" not in captured["payload"]
+    assert "json_schema" not in captured["payload"]
+    assert captured["payload"]["messages"][1]["content"] == "health_check: reply with only ok"
+
+
+def test_health_check_default_transport_uses_openai_sdk_client_not_urllib(monkeypatch):
+    captured = {}
+
+    def fail_urlopen(*args, **kwargs):
+        raise AssertionError("urllib transport should not be used by default")
+
+    def fake_build_client(*, base_url, api_key, timeout):
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        captured["timeout"] = timeout
+        return object()
+
+    def fake_call_chat_completion(client, model, messages, temperature=0, response_format=None):
+        captured["model"] = model
+        captured["messages"] = messages
+        captured["temperature"] = temperature
+        captured["response_format"] = response_format
+        return "ok"
+
+    monkeypatch.setattr(urllib.request, "urlopen", fail_urlopen)
+    monkeypatch.setattr(private_llm_client, "build_openai_compatible_client", fake_build_client)
+    monkeypatch.setattr(private_llm_client, "call_chat_completion", fake_call_chat_completion)
+
+    client = PrivateLLMClient(
+        PrivateLLMConfig(
+            enabled=True,
+            endpoint="https://api.groq.com/openai/v1",
+            model="llama-3.3-70b-versatile",
+            api_key="secret",
+            timeout=7,
+        )
+    )
+
+    result = client.health_check()
+
+    assert result["available"] is True
+    assert captured["base_url"] == "https://api.groq.com/openai/v1"
+    assert captured["api_key"] == "secret"
+    assert captured["timeout"] == 7
+    assert captured["model"] == "llama-3.3-70b-versatile"
+    assert set(captured["messages"][0]) == {"role", "content"}
+    assert captured["temperature"] == 0
+    assert captured["response_format"] is None
+
+
+def test_safe_chat_default_transport_preserves_json_response_format(monkeypatch):
+    captured = {}
+
+    def fake_build_client(*, base_url, api_key, timeout):
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        captured["timeout"] = timeout
+        return object()
+
+    def fake_call_chat_completion(client, model, messages, temperature=0, response_format=None):
+        captured["model"] = model
+        captured["messages"] = messages
+        captured["temperature"] = temperature
+        captured["response_format"] = response_format
+        return '{"document_type":"report"}'
+
+    monkeypatch.setattr(private_llm_client, "build_openai_compatible_client", fake_build_client)
+    monkeypatch.setattr(private_llm_client, "call_chat_completion", fake_call_chat_completion)
+
+    client = PrivateLLMClient(
+        PrivateLLMConfig(
+            enabled=True,
+            endpoint="https://api.groq.com/openai/v1",
+            model="llama-3.3-70b-versatile",
+            api_key="secret",
+            timeout=7,
+        )
+    )
+
+    result = client.assist_document_type(_document())
+
+    assert result["available"] is True
+    assert result["operations_generated"] is False
+    assert captured["base_url"] == "https://api.groq.com/openai/v1"
+    assert captured["api_key"] == "secret"
+    assert captured["response_format"] == {"type": "json_object"}
+
+
+def test_default_transport_llm_call_error_falls_back(monkeypatch):
+    def fake_build_client(*, base_url, api_key, timeout):
+        return object()
+
+    def fake_call_chat_completion(client, model, messages, temperature=0, response_format=None):
+        raise LLMCallError("provider said no")
+
+    monkeypatch.setattr(private_llm_client, "build_openai_compatible_client", fake_build_client)
+    monkeypatch.setattr(private_llm_client, "call_chat_completion", fake_call_chat_completion)
+
+    client = PrivateLLMClient(
+        PrivateLLMConfig(
+            enabled=True,
+            endpoint="https://api.groq.com/openai/v1",
+            model="llama-3.3-70b-versatile",
+            api_key="secret",
+        )
+    )
+
+    result = client.health_check()
+
+    assert result["available"] is False
+    assert result["task"] == "health_check"
+    assert "provider said no" in result["reason"]
+    assert "secret" not in result["reason"]
+
+
+def test_health_check_accepts_plain_ok_response():
+    def transport(endpoint, headers, payload, timeout):
+        return {"choices": [{"message": {"content": "ok"}}]}
+
+    client = PrivateLLMClient(
+        PrivateLLMConfig(
+            enabled=True,
+            endpoint="http://private-model:8000/v1",
+            model="local-docx-model",
+        ),
+        transport=transport,
+    )
+
+    result = client.health_check()
+
+    assert result["available"] is True
+    assert result["result"]["status"] == "ok"
 
 
 def test_health_check_failure_reports_fallback():
@@ -462,6 +598,68 @@ def test_health_check_failure_reports_fallback():
     assert result["task"] == "health_check"
     assert result["mode"] == "rule_only_fallback"
     assert "network down" in result["reason"]
+
+
+def test_health_check_http_error_reports_status_and_body():
+    def transport(endpoint, headers, payload, timeout):
+        raise urllib.error.HTTPError(
+            url="https://api.groq.com/openai/v1/chat/completions",
+            code=403,
+            msg="Forbidden",
+            hdrs={},
+            fp=None,
+        )
+
+    client = PrivateLLMClient(
+        PrivateLLMConfig(
+            enabled=True,
+            endpoint="https://api.groq.com/openai/v1",
+            model="llama-3.3-70b-versatile",
+            api_key="secret",
+        ),
+        transport=transport,
+    )
+
+    result = client.health_check()
+
+    assert result["available"] is False
+    assert result["task"] == "health_check"
+    assert "HTTPError 403 Forbidden" in result["reason"]
+    assert "https://api.groq.com/openai/v1/chat/completions" in result["reason"]
+    assert "body=(empty)" in result["reason"]
+    assert "secret" not in result["reason"]
+
+
+def test_health_check_http_error_reports_response_body_snippet():
+    class BodyHTTPError(urllib.error.HTTPError):
+        def read(self, amt=None):
+            return b'{"error":{"message":"invalid request for provider"}}'
+
+    def transport(endpoint, headers, payload, timeout):
+        raise BodyHTTPError(
+            url="https://api.groq.com/openai/v1/chat/completions",
+            code=403,
+            msg="Forbidden",
+            hdrs={},
+            fp=None,
+        )
+
+    client = PrivateLLMClient(
+        PrivateLLMConfig(
+            enabled=True,
+            endpoint="https://api.groq.com/openai/v1",
+            model="llama-3.3-70b-versatile",
+            api_key="secret",
+        ),
+        transport=transport,
+    )
+
+    result = client.health_check()
+
+    assert result["available"] is False
+    assert "HTTPError 403 Forbidden" in result["reason"]
+    assert "invalid request for provider" in result["reason"]
+    assert "secret" not in result["reason"]
 
 
 def test_health_check_retries_transport_failures():
