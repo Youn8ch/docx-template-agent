@@ -15,8 +15,10 @@ safety:
   allow_modify_table_cell_text: false
 
 llm:
-  enabled: false
-  endpoint: ""
-  model: ""
-  api_key_env: PRIVATE_LLM_API_KEY
-  timeout: 8
+  enabled: true
+  provider: "openai_compatible"
+  base_url: "https://api.groq.com/openai/v1"
+  api_key_env: "PRIVATE_LLM_API_KEY"
+  model: "llama-3.1-8b-instant"
+  timeout: 60
+  temperature: 0

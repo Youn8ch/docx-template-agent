@@ -1,8 +1,0 @@
-{
-  "available": false,
-  "mode": "rule_only_fallback",
-  "status": "fallback",
-  "error": "RuntimeError: private model exploded",
-  "operations_source": "rule_engine_only",
-  "operations_generated": false
-}

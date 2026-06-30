@@ -114,6 +114,31 @@ llm:
 
 `endpoint` 与 `base_url` 兼容，目标服务需提供 OpenAI-compatible `/v1/chat/completions` 接口。
 
+## OpenAI-compatible LLM Client
+
+统一的 OpenAI-compatible SDK client 位于 `src/llm/client.py`。业务代码不要直接初始化 `OpenAI(...)`，应使用 `build_llm_client()` 和 `call_chat_completion()`。
+
+`config.yaml` 支持：
+```yaml
+llm:
+  enabled: true
+  provider: "openai_compatible"
+  base_url: "https://api.groq.com/openai/v1"
+  api_key_env: "PRIVATE_LLM_API_KEY"
+  model: "llama-3.1-8b-instant"
+  timeout: 60
+  temperature: 0
+```
+
+`api_key_env` 必须是环境变量名，不能填写真实 API Key。切换 Groq、Ollama、vLLM 或内网 OpenAI-compatible 服务时，通常只需要修改 `base_url`、`api_key_env` 和 `model`。外网临时测试 Groq 时，可以把 `api_key_env` 改成 `GROQ_API_KEY`，但项目默认值保持通用。
+
+TODO: 后续可评估是否把 `PrivateLLMClient` 的底层 transport 迁移到统一 client；本阶段不迁移 CLI/Web/MCP 主链路。
+
+LLM JSON 自检：
+```bash
+python -m src.llm.llm_check
+```
+
 ## Web 使用
 
 启动 FastAPI Web 应用：
