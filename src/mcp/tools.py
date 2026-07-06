@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from src.engine.checker.style_checker import check_styles
-from src.engine.formatter.apply_template import apply_operations
+from src.engine.formatter.apply_template import apply_operations_transactional
 from src.engine.parser.docx_parser import parse_docx
 from src.engine.parser.structure_detector import detect_structure
 from src.engine.reporter.json_report import write_json_report
@@ -287,7 +287,15 @@ def apply_docx_template(request: dict[str, Any]) -> dict[str, Any]:
         output_docx = _output_docx_path(input_file, output_dir)
 
         template, document, report = _check(input_file, req)
-        results = apply_operations(input_file, output_docx, report.operations)
+        execution_report = apply_operations_transactional(
+            input_file,
+            output_docx,
+            report.operations,
+            template=template,
+            document_before=document,
+            report_before=report,
+            retain_failed_temp=False,
+        )
         llm_assistance = _maybe_build_llm_assistance(req, document, report)
         llm_analysis = write_llm_analysis(llm_assistance, output_docx) if llm_assistance else None
         markdown_report = write_markdown_report(
@@ -300,7 +308,9 @@ def apply_docx_template(request: dict[str, Any]) -> dict[str, Any]:
             llm_assistance=llm_assistance,
         )
         json_report = write_json_report(report, output_docx)
-        failed_results = [result for result in results if result.get("status") == "failed"]
+        failed_results = [
+            result for result in execution_report.execution_results if result.get("status") == "failed"
+        ]
 
         LOGGER.info(
             "%s ok input=%s output=%s template=%s issues=%s operations=%s failed=%s",
@@ -312,23 +322,35 @@ def apply_docx_template(request: dict[str, Any]) -> dict[str, Any]:
             report.operation_count,
             len(failed_results),
         )
+        success = execution_report.status == "success"
         payload = {
-            "ok": True,
+            "ok": success,
             "tool": tool_name,
             "input_path": str(input_file),
             "template": str(template["template_id"]),
-            "new_docx_path": str(output_docx),
-            "output_docx_path": str(output_docx),
+            "expected_output_docx_path": str(output_docx),
             "markdown_check_report_path": str(markdown_report),
             "markdown_report_path": str(markdown_report),
             "json_modification_detail_path": str(json_report),
             "json_detail_path": str(json_report),
             "issue_count": report.issue_count,
             "operation_count": report.operation_count,
-            "result_count": len(results),
+            "result_count": len(execution_report.execution_results),
             "failed_operation_count": len(failed_results),
-            "results": results,
+            "execution_status": execution_report.status,
+            "issues_before": execution_report.issues_before,
+            "issues_after": execution_report.issues_after,
+            "operations_before": execution_report.operations_before,
+            "operations_after": execution_report.operations_after,
+            "validation_errors": execution_report.validation_errors,
+            "integrity_errors": execution_report.integrity_errors,
+            "recheck_errors": execution_report.recheck_errors,
+            "temp_file_retained": execution_report.temp_file_retained,
+            "results": execution_report.execution_results,
         }
+        if success:
+            payload["new_docx_path"] = str(output_docx)
+            payload["output_docx_path"] = str(output_docx)
         if llm_analysis is not None:
             payload["llm_analysis_path"] = str(llm_analysis)
             payload["llm_status"] = str(llm_assistance.get("status", "fallback"))

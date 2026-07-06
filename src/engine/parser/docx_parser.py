@@ -66,6 +66,27 @@ def _first_line_indent_chars(paragraph: Any) -> float | None:
         return None
 
 
+def _indent_length(paragraph: Any, attr: str) -> float | None:
+    p_pr = paragraph._p.pPr
+    ind = getattr(p_pr, "ind", None) if p_pr is not None else None
+    if ind is None:
+        return None
+    value = ind.get(qn(attr))
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _indent_chars(paragraph: Any, attr: str) -> float | None:
+    value = _indent_length(paragraph, attr)
+    if value is None:
+        return None
+    return value / 100
+
+
 def _run_font_name(run: Any) -> str | None:
     font_name = getattr(run.font, "name", None)
     if font_name:
@@ -113,7 +134,10 @@ def _paragraph_info(paragraph: Any, index: int) -> ParagraphInfo:
         space_before=_length_to_pt(paragraph_format.space_before),
         space_after=_length_to_pt(paragraph_format.space_after),
         first_line_indent=_length_to_pt(paragraph_format.first_line_indent),
+        first_line=_indent_length(paragraph, "w:firstLine"),
         first_line_indent_chars=_first_line_indent_chars(paragraph),
+        hanging=_indent_length(paragraph, "w:hanging"),
+        hanging_chars=_indent_chars(paragraph, "w:hangingChars"),
         runs=runs,
     )
 
@@ -139,6 +163,7 @@ def _table_cell_info(cell: Any, row_index: int, col_index: int) -> TableCellInfo
         row_index=row_index,
         col_index=col_index,
         text=cell.text or "",
+        paragraph_texts=[paragraph.text or "" for paragraph in cell.paragraphs],
         style_name=style_name,
         alignment=alignment,
         font_names=font_names,

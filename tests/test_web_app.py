@@ -6,6 +6,7 @@ from docx import Document
 from fastapi.testclient import TestClient
 
 from src.llm import assistance
+from src.engine.model.operation_model import ExecutionReport
 from src.web.app import app
 from src.web import service
 
@@ -297,6 +298,31 @@ def test_web_format_llm_exception_still_generates_formatted_docx(tmp_path, monke
     assert "RuntimeError: private model exploded" in analysis["error"]
     assert analysis["operations_source"] == "rule_engine_only"
     assert analysis["operations_generated"] is False
+
+
+def test_web_format_failure_has_no_docx_download_and_no_temp_path(tmp_path, monkeypatch):
+    input_docx = tmp_path / "input.docx"
+    _create_docx(input_docx)
+    client = TestClient(app)
+
+    def fake_transaction(*args, **kwargs):
+        assert kwargs["retain_failed_temp"] is False
+        return ExecutionReport(
+            status="content_integrity_failed",
+            expected_output_path=str(args[1]),
+            temp_output_path=str((tmp_path / ".leaked.tmp.docx").resolve()),
+            temp_file_retained=True,
+            integrity_errors=["paragraph text changed"],
+        )
+
+    monkeypatch.setattr(service, "apply_operations_transactional", fake_transaction)
+
+    response = _upload(client, "/format", input_docx, {"template_id": "report"})
+
+    assert response.status_code == 200
+    assert "/download/" in response.text
+    assert "/docx" not in response.text
+    assert ".leaked.tmp.docx" not in response.text
 
 
 def test_web_use_llm_false_does_not_call_llm(tmp_path, monkeypatch):

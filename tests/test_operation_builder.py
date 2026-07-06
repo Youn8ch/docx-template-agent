@@ -179,3 +179,80 @@ def test_check_styles_rejects_pt_indent_as_character_indent():
         operation.properties.get("first_line_indent_chars") == 2
         for operation in report.operations
     )
+
+
+def test_check_styles_treats_missing_zero_character_indent_as_match():
+    template = {
+        "template_id": "test",
+        "rules": {
+            "heading_1": {
+                "first_line_indent_chars": 0,
+            },
+        },
+        "safety": {},
+    }
+    document = DocumentModel(
+        filepath=Path("sample.docx"),
+        paragraphs=[
+            ParagraphInfo(
+                index=1,
+                text="heading",
+                role="heading_1",
+                first_line_indent=None,
+                first_line_indent_chars=None,
+            )
+        ],
+    )
+
+    report = check_styles(document, template)
+
+    assert report.issue_count == 0
+    assert report.operation_count == 0
+
+
+def test_check_styles_excludes_header_row_from_table_body_rule():
+    template = {
+        "template_id": "test",
+        "rules": {
+            "table": {
+                "font_name": "SimSun",
+                "bold": False,
+            },
+            "table_header": {
+                "font_name": "SimHei",
+                "bold": True,
+            },
+        },
+        "safety": {},
+    }
+    document = DocumentModel(
+        filepath=Path("sample.docx"),
+        tables=[
+            TableInfo(
+                index=1,
+                rows=2,
+                cols=1,
+                cells=[
+                    TableCellInfo(
+                        row_index=1,
+                        col_index=1,
+                        text="header",
+                        font_names=["SimHei"],
+                        bold_values=[True],
+                    ),
+                    TableCellInfo(
+                        row_index=2,
+                        col_index=1,
+                        text="body",
+                        font_names=["SimSun"],
+                        bold_values=[False],
+                    ),
+                ],
+            )
+        ],
+    )
+
+    report = check_styles(document, template)
+
+    assert report.issue_count == 0
+    assert report.operation_count == 0

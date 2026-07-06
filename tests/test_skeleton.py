@@ -201,7 +201,7 @@ class SkeletonTest(unittest.TestCase):
             tables=[
                 TableInfo(
                     index=1,
-                    rows=1,
+                    rows=2,
                     cols=1,
                     cells=[
                         TableCellInfo(
@@ -212,7 +212,16 @@ class SkeletonTest(unittest.TestCase):
                             font_names=["Arial"],
                             font_sizes=[9],
                             bold_values=[False],
-                        )
+                        ),
+                        TableCellInfo(
+                            row_index=2,
+                            col_index=1,
+                            text="body",
+                            alignment="left",
+                            font_names=["Arial"],
+                            font_sizes=[9],
+                            bold_values=[True],
+                        ),
                     ],
                 )
             ],
@@ -324,9 +333,10 @@ class SkeletonTest(unittest.TestCase):
         self.assertEqual(body_indent.get(qn("w:left")), "0")
 
         heading_indent = formatted.paragraphs[1]._p.pPr.ind
-        self.assertIsNone(heading_indent.get(qn("w:firstLineChars")))
+        self.assertEqual(heading_indent.get(qn("w:firstLineChars")), "0")
         self.assertIsNone(heading_indent.get(qn("w:firstLine")))
         self.assertIsNone(heading_indent.get(qn("w:hanging")))
+        self.assertIsNone(heading_indent.get(qn("w:hangingChars")))
         self.assertEqual(heading_indent.get(qn("w:left")), "0")
 
         header_run = formatted.tables[0].cell(0, 0).paragraphs[0].runs[0]

@@ -11,7 +11,7 @@ from typing import BinaryIO
 from uuid import uuid4
 
 from src.engine.checker.style_checker import check_styles
-from src.engine.formatter.apply_template import apply_operations
+from src.engine.formatter.apply_template import apply_operations_transactional
 from src.engine.parser.docx_parser import parse_docx
 from src.engine.parser.structure_detector import detect_structure
 from src.engine.reporter.json_report import write_json_report
@@ -46,8 +46,12 @@ class WebJobResult:
     table_count: int
     issue_count: int
     operation_count: int
+    expected_docx: Path | None = None
     failed_operation_count: int = 0
     llm_analysis: Path | None = None
+    execution_status: str = "success"
+    issues_after: int | None = None
+    operations_after: int | None = None
 
 
 def list_templates(template_dir: Path = DEFAULT_TEMPLATE_DIR) -> list[dict[str, str]]:
@@ -139,7 +143,15 @@ def run_format(
     input_docx = _save_upload(upload, filename, directory)
     output_docx = directory / f"{_safe_stem(filename)}_formatted_{_timestamp()}.docx"
     template, document, report = _check(input_docx, template_id)
-    results = apply_operations(input_docx, output_docx, report.operations)
+    execution_report = apply_operations_transactional(
+        input_docx,
+        output_docx,
+        report.operations,
+        template=template,
+        document_before=document,
+        report_before=report,
+        retain_failed_temp=False,
+    )
     llm_assistance = None
     llm_analysis = None
     if use_llm:
@@ -155,13 +167,16 @@ def run_format(
         llm_assistance=llm_assistance,
     )
     json_detail = write_json_report(report, output_docx)
-    failed_results = [result for result in results if result.get("status") == "failed"]
+    failed_results = [
+        result for result in execution_report.execution_results if result.get("status") == "failed"
+    ]
     return WebJobResult(
         job_id=job_id,
         action="format",
         template=str(template["template_id"]),
         input_docx=input_docx,
-        formatted_docx=output_docx,
+        formatted_docx=output_docx if execution_report.status == "success" else None,
+        expected_docx=output_docx,
         markdown_report=markdown_report,
         json_detail=json_detail,
         llm_analysis=llm_analysis,
@@ -170,6 +185,9 @@ def run_format(
         issue_count=report.issue_count,
         operation_count=report.operation_count,
         failed_operation_count=len(failed_results),
+        execution_status=execution_report.status,
+        issues_after=execution_report.issues_after,
+        operations_after=execution_report.operations_after,
     )
 
 

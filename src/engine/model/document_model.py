@@ -36,7 +36,10 @@ class ParagraphInfo(BaseModel):
     space_before: float | None = None
     space_after: float | None = None
     first_line_indent: float | None = None
+    first_line: float | None = None
     first_line_indent_chars: float | None = None
+    hanging: float | None = None
+    hanging_chars: float | None = None
     runs: list[RunInfo] = Field(default_factory=list)
 
     @model_validator(mode="before")
@@ -59,6 +62,7 @@ class TableCellInfo(BaseModel):
     row_index: int
     col_index: int
     text: str = ""
+    paragraph_texts: list[str] = Field(default_factory=list)
     style_name: str | None = None
     alignment: str | None = None
     font_names: list[str | None] = Field(default_factory=list)

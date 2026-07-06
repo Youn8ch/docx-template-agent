@@ -45,6 +45,8 @@ class StyleIssue(BaseModel):
     expected: Any = None
     message: str
 
+    model_config = {"extra": "forbid"}
+
 
 class FormatOperation(BaseModel):
     operation_id: str
@@ -63,10 +65,13 @@ class FormatOperation(BaseModel):
         converted = dict(data)
         if "operation_id" not in converted and "id" in converted:
             converted["operation_id"] = converted["id"]
+            converted.pop("id", None)
         if "action" not in converted and "type" in converted:
             converted["action"] = converted["type"]
+            converted.pop("type", None)
         if "properties" not in converted and "params" in converted:
             converted["properties"] = converted["params"]
+            converted.pop("params", None)
         return converted
 
     @property
@@ -76,6 +81,8 @@ class FormatOperation(BaseModel):
     @property
     def type(self) -> str:
         return self.action
+
+    model_config = {"extra": "forbid"}
 
 
 class StyleCheckReport(BaseModel):
@@ -91,11 +98,47 @@ class StyleCheckReport(BaseModel):
         self.operation_count = len(self.operations)
         return self
 
+    model_config = {"extra": "forbid"}
+
 
 class OperationResult(BaseModel):
     operation_id: str
     status: Literal["success", "skipped", "failed"]
     message: str
+
+    model_config = {"extra": "forbid"}
+
+
+ExecutionStatus = Literal[
+    "success",
+    "partial_success",
+    "validation_failed",
+    "execution_failed",
+    "content_integrity_failed",
+    "fatal",
+]
+
+
+class ExecutionReport(BaseModel):
+    status: ExecutionStatus
+    output_path: str | None = None
+    expected_output_path: str | None = None
+    temp_output_path: str | None = None
+    temp_file_retained: bool = False
+    output_existed_before: bool = False
+    output_overwritten: bool = False
+    issues_before: int = 0
+    issues_after: int | None = None
+    operations_before: int = 0
+    operations_after: int | None = None
+    validation_errors: list[str] = Field(default_factory=list)
+    execution_results: list[dict[str, Any]] = Field(default_factory=list)
+    integrity_before: dict[str, Any] = Field(default_factory=dict)
+    integrity_after: dict[str, Any] = Field(default_factory=dict)
+    integrity_errors: list[str] = Field(default_factory=list)
+    recheck_errors: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
 
 
 def is_safe_operation(operation: FormatOperation) -> bool:

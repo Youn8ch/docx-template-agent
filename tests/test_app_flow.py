@@ -6,8 +6,10 @@ import pytest
 from docx import Document
 
 import app
-from src.engine.model.operation_model import SAFE_OPERATION_ACTIONS
+from src.engine.model.operation_model import ExecutionReport, SAFE_OPERATION_ACTIONS
 from src.engine.reporter import markdown_report
+from src.mcp import tools as mcp_tools
+from src.web import service as web_service
 
 
 FORBIDDEN_ACTIONS = {"delete_paragraph", "replace_text", "modify_table_cell_text"}
@@ -22,6 +24,19 @@ def _create_report_docx(path: Path) -> None:
     document.add_paragraph("\u8fd9\u662f\u4e00\u6bb5\u6b63\u6587\u5185\u5bb9\u3002")
     table = document.add_table(rows=1, cols=1)
     table.cell(0, 0).text = "\u8868\u683c\u6587\u672c"
+    document.save(path)
+
+
+def _create_report_docx_with_table_body(path: Path) -> None:
+    document = Document()
+    document.add_paragraph("\u6b63\u5f0f\u62a5\u544a")
+    document.add_paragraph("\u4e00\u3001\u603b\u4f53\u60c5\u51b5")
+    document.add_paragraph("\uff08\u4e00\uff09\u5de5\u4f5c\u8fdb\u5c55")
+    document.add_paragraph("1. \u91cd\u70b9\u4e8b\u9879")
+    document.add_paragraph("\u8fd9\u662f\u4e00\u6bb5\u6b63\u6587\u5185\u5bb9\u3002")
+    table = document.add_table(rows=2, cols=1)
+    table.cell(0, 0).text = "\u8868\u5934"
+    table.cell(1, 0).text = "\u8868\u4f53"
     document.save(path)
 
 
@@ -56,6 +71,59 @@ def test_run_generates_output_reports_and_only_safe_operations(tmp_path):
 
     assert actions <= SAFE_OPERATION_ACTIONS
     assert not (actions & FORBIDDEN_ACTIONS)
+
+
+def test_production_entrypoints_use_transactional_workflow():
+    for entrypoint in (app.run, web_service.run_format, mcp_tools.apply_docx_template):
+        source = inspect.getsource(entrypoint)
+        assert "apply_operations_transactional" in source
+        assert "apply_operations(" not in source
+
+
+def test_run_is_idempotent_after_first_formatting_pass(tmp_path):
+    input_docx = tmp_path / "input.docx"
+    first_output = tmp_path / "first"
+    second_output = tmp_path / "second"
+    _create_report_docx_with_table_body(input_docx)
+
+    first_payload = app.run(str(input_docx), "report", str(first_output))
+    second_payload = app.run(first_payload["output"], "report", str(second_output))
+
+    assert second_payload["issue_count"] == 0
+    assert second_payload["operation_count"] == 0
+    assert second_payload["failed_operation_count"] == 0
+
+
+def test_run_failure_does_not_expose_formal_output_and_can_retain_temp(tmp_path, monkeypatch):
+    input_docx = tmp_path / "input.docx"
+    output_dir = tmp_path / "out"
+    retained_temp = output_dir / ".retained.tmp.docx"
+    _create_report_docx(input_docx)
+
+    def fake_transaction(*args, **kwargs):
+        assert kwargs["retain_failed_temp"] is True
+        return ExecutionReport(
+            status="content_integrity_failed",
+            expected_output_path=str(args[1]),
+            temp_output_path=str(retained_temp),
+            temp_file_retained=True,
+            integrity_errors=["paragraph text changed"],
+        )
+
+    monkeypatch.setattr(app, "apply_operations_transactional", fake_transaction)
+
+    payload = app.run(
+        str(input_docx),
+        "report",
+        str(output_dir),
+        retain_failed_temp=True,
+    )
+
+    assert payload["ok"] is False
+    assert payload["output"] is None
+    assert payload["expected_output"]
+    assert payload["temp_file_retained"] is True
+    assert payload["temp_output_path"] == str(retained_temp)
 
 
 def test_run_writes_llm_analysis_json_when_llm_returns_assistance(tmp_path, monkeypatch):
@@ -308,7 +376,7 @@ def test_run_llm_test_uses_health_check_only(monkeypatch, capsys):
     monkeypatch.setattr(app, "PrivateLLMClient", DummyClient)
     monkeypatch.setattr(app, "parse_docx", fail_if_called)
     monkeypatch.setattr(app, "check_styles", fail_if_called)
-    monkeypatch.setattr(app, "apply_operations", fail_if_called)
+    monkeypatch.setattr(app, "apply_operations_transactional", fail_if_called)
 
     result = app.run_llm_test()
     output = capsys.readouterr().out

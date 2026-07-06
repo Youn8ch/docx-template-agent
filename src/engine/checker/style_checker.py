@@ -21,6 +21,7 @@ FORMAT_FIELDS = (
     "first_line_indent_chars",
 )
 TABLE_FIELDS = ("font_name", "font_size", "bold", "alignment")
+ZERO_INDENT_ROLES = {"title", "heading_1", "heading_2", "heading_3"}
 
 
 def _present_values(values: list[Any]) -> list[Any]:
@@ -47,12 +48,28 @@ def _numbers_match(current: Any, expected: Any, tolerance: float = 0.25) -> bool
         return False
 
 
+def _unset_or_zero(value: Any) -> bool:
+    return value is None or _numbers_match(value, 0)
+
+
 def _scalar_matches(current: Any, expected: Any) -> bool:
     if isinstance(expected, float | int):
         return _numbers_match(current, expected)
     if isinstance(expected, str):
         return str(current or "").strip().lower() == expected.strip().lower()
     return current == expected
+
+
+def _missing_zero_indent_is_match(paragraph: ParagraphInfo, expected: Any) -> bool:
+    if paragraph.role not in ZERO_INDENT_ROLES or not _numbers_match(expected, 0):
+        return False
+    return (
+        _unset_or_zero(paragraph.first_line_indent_chars)
+        and _unset_or_zero(paragraph.first_line)
+        and _unset_or_zero(paragraph.first_line_indent)
+        and _unset_or_zero(paragraph.hanging)
+        and _unset_or_zero(paragraph.hanging_chars)
+    )
 
 
 def _list_matches(values: list[Any], expected: Any) -> bool:
@@ -81,6 +98,11 @@ def _paragraph_matches(paragraph: ParagraphInfo, field: str, expected: Any) -> b
         return _list_matches(paragraph.font_sizes, expected)
     if field == "bold":
         return _list_matches(paragraph.bold_values, expected)
+    if field == "first_line_indent_chars" and _numbers_match(expected, 0):
+        return _scalar_matches(
+            paragraph.first_line_indent_chars,
+            expected,
+        ) or _missing_zero_indent_is_match(paragraph, expected)
     return _scalar_matches(_current_paragraph_value(paragraph, field), expected)
 
 
@@ -132,15 +154,26 @@ def _check_paragraph(
     return issues, next_issue_id
 
 
-def _table_cells(table: TableInfo, header_only: bool = False) -> list[Any]:
+def _table_cells(
+    table: TableInfo,
+    header_only: bool = False,
+    body_only: bool = False,
+) -> list[Any]:
     if header_only:
         return [cell for cell in table.cells if cell.row_index == 1]
+    if body_only:
+        return [cell for cell in table.cells if cell.row_index != 1]
     return table.cells
 
 
-def _current_table_value(table: TableInfo, field: str, header_only: bool = False) -> Any:
+def _current_table_value(
+    table: TableInfo,
+    field: str,
+    header_only: bool = False,
+    body_only: bool = False,
+) -> Any:
     values: list[Any] = []
-    for cell in _table_cells(table, header_only=header_only):
+    for cell in _table_cells(table, header_only=header_only, body_only=body_only):
         if field == "font_name":
             values.extend(cell.font_names)
         elif field == "font_size":
@@ -152,9 +185,15 @@ def _current_table_value(table: TableInfo, field: str, header_only: bool = False
     return _display_value(values)
 
 
-def _table_matches(table: TableInfo, field: str, expected: Any, header_only: bool = False) -> bool:
+def _table_matches(
+    table: TableInfo,
+    field: str,
+    expected: Any,
+    header_only: bool = False,
+    body_only: bool = False,
+) -> bool:
     values: list[Any] = []
-    for cell in _table_cells(table, header_only=header_only):
+    for cell in _table_cells(table, header_only=header_only, body_only=body_only):
         if field == "font_name":
             values.extend(cell.font_names)
         elif field == "font_size":
@@ -173,13 +212,17 @@ def _check_table(
     target_type: str,
     next_issue_id: int,
     header_only: bool = False,
+    body_only: bool = False,
 ) -> tuple[list[StyleIssue], int]:
     issues: list[StyleIssue] = []
+    if not _table_cells(table, header_only=header_only, body_only=body_only):
+        return issues, next_issue_id
+
     for field in TABLE_FIELDS:
         if field not in rule:
             continue
         expected = rule[field]
-        if _table_matches(table, field, expected, header_only=header_only):
+        if _table_matches(table, field, expected, header_only=header_only, body_only=body_only):
             continue
         issues.append(
             _issue(
@@ -188,7 +231,12 @@ def _check_table(
                 target_type,
                 table.index,
                 role,
-                _current_table_value(table, field, header_only=header_only),
+                _current_table_value(
+                    table,
+                    field,
+                    header_only=header_only,
+                    body_only=body_only,
+                ),
                 expected,
             )
         )
@@ -215,6 +263,7 @@ def check_styles(document: DocumentModel, template: dict[str, Any]) -> StyleChec
 
     table_rule = rules.get("table")
     table_header_rule = rules.get("table_header")
+    has_table_header_rule = isinstance(table_header_rule, dict)
     for table in document.tables:
         if isinstance(table_rule, dict):
             table_issues, next_issue_id = _check_table(
@@ -223,9 +272,10 @@ def check_styles(document: DocumentModel, template: dict[str, Any]) -> StyleChec
                 "table",
                 "table",
                 next_issue_id,
+                body_only=has_table_header_rule,
             )
             issues.extend(table_issues)
-        if isinstance(table_header_rule, dict):
+        if has_table_header_rule:
             header_issues, next_issue_id = _check_table(
                 table,
                 table_header_rule,

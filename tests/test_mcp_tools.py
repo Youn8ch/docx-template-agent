@@ -5,6 +5,7 @@ from pathlib import Path
 from docx import Document
 import pytest
 
+from src.engine.model.operation_model import ExecutionReport
 from src.mcp import tools
 
 
@@ -323,3 +324,28 @@ def test_apply_docx_template_rejects_output_dir_outside_allowed_roots(tmp_path):
     assert result["ok"] is False
     assert result["error"]["type"] == "ValueError"
     assert "output_dir must be inside" in result["error"]["message"]
+
+
+def test_apply_docx_template_failure_does_not_return_output_or_temp_path(tmp_path, monkeypatch):
+    input_docx = tmp_path / "input.docx"
+    _create_docx(input_docx)
+    leaked_temp = tmp_path / ".failure.tmp.docx"
+
+    def fake_transaction(*args, **kwargs):
+        return ExecutionReport(
+            status="content_integrity_failed",
+            expected_output_path=str(args[1]),
+            temp_output_path=str(leaked_temp.resolve()),
+            temp_file_retained=True,
+            integrity_errors=["paragraph text changed"],
+        )
+
+    monkeypatch.setattr(tools, "apply_operations_transactional", fake_transaction)
+
+    result = tools.apply_docx_template({"input_path": str(input_docx), "template": "report"})
+
+    for key in ("output_docx_path", "new_docx_path", "temp_output_path"):
+        assert key not in result
+    assert result["ok"] is False
+    assert result["execution_status"] == "content_integrity_failed"
+    assert result["expected_output_docx_path"]
