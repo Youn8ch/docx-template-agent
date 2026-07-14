@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
+from src.engine.model.facts_model import DocumentFacts
+
 
 ParagraphRole = Literal["empty", "title", "heading_1", "heading_2", "heading_3", "body", "unknown"]
 
@@ -116,6 +118,7 @@ class DocumentModel(BaseModel):
     paragraphs: list[ParagraphInfo] = Field(default_factory=list)
     tables: list[TableInfo] = Field(default_factory=list)
     styles: list[str] = Field(default_factory=list)
+    facts: DocumentFacts | None = None
 
     model_config = {"arbitrary_types_allowed": True}
 

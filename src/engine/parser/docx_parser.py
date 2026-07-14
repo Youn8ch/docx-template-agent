@@ -196,7 +196,7 @@ def _used_styles(paragraphs: list[ParagraphInfo], tables: list[TableInfo]) -> li
     return sorted(styles)
 
 
-def parse_docx(path: str | Path) -> DocumentModel:
+def parse_docx(path: str | Path, include_facts: bool = False) -> DocumentModel:
     docx_path = Path(path)
     if not docx_path.exists():
         raise FileNotFoundError(f"input docx not found: {docx_path}")
@@ -218,7 +218,7 @@ def parse_docx(path: str | Path) -> DocumentModel:
     ]
     tables = [_table_info(table, index) for index, table in enumerate(document.tables, start=1)]
 
-    return DocumentModel(
+    model = DocumentModel(
         filepath=docx_path,
         paragraph_count=len(paragraphs),
         table_count=len(tables),
@@ -226,3 +226,8 @@ def parse_docx(path: str | Path) -> DocumentModel:
         tables=tables,
         styles=_used_styles(paragraphs, tables),
     )
+    if include_facts:
+        from src.engine.parser.facts_extractor import extract_document_facts
+
+        model = model.model_copy(update={"facts": extract_document_facts(docx_path, model)})
+    return model
